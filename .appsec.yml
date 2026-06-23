@@ -1,0 +1,4 @@
+language: nodejs
+port: 3000
+health_endpoint: /
+dast: false
