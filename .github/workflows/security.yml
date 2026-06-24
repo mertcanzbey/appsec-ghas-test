@@ -1,0 +1,15 @@
+name: Security
+
+on:
+  push:
+
+permissions:
+  contents: read
+  statuses: write
+  actions: read
+
+jobs:
+  appsec:
+    uses: mertcanzbey/appsec-workflows-v2/.github/workflows/security-reusable.yml@main
+    secrets:
+      ghas_token: ${{ secrets.APPSEC_GHAS_TOKEN }}
