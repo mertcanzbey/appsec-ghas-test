@@ -1,0 +1,78 @@
+name: GHAS Verify (Faz 1)
+
+# Faz 1 kapanış doğrulaması: PAT (APPSEC_GHAS_TOKEN) ile Actions İÇİNDE
+# 3 GHAS alert API'sini + enablement durumunu okuyabiliyor muyuz?
+# Kurumsalda bu token App-mint edilmiş installation token olacak; mekanik aynı.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read   # default GITHUB_TOKEN bilerek minimal — GHAS okumalarını PAT yapacak
+
+jobs:
+  ghas-verify:
+    name: 🔎 GHAS okuma doğrulama
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      R: ${{ github.repository }}
+    steps:
+      - name: PAT var mı kontrol
+        env:
+          PAT: ${{ secrets.APPSEC_GHAS_TOKEN }}
+        run: |
+          if [ -z "$PAT" ]; then
+            echo "::error::APPSEC_GHAS_TOKEN secret tanımlı değil"; exit 1
+          fi
+          echo "✅ PAT secret mevcut"
+
+      - name: Default GITHUB_TOKEN ile dene (BAŞARISIZ olmalı — kanıt)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "## Default GITHUB_TOKEN ile okuma denemesi (asimetri kanıtı)" >> $GITHUB_STEP_SUMMARY
+          for ep in "dependabot/alerts" "secret-scanning/alerts"; do
+            CODE=$(gh api "repos/$R/$ep?per_page=1" -i 2>/dev/null | head -1 || true)
+            RES=$(gh api "repos/$R/$ep?per_page=1" 2>&1 | head -c 120 || true)
+            echo "- \`$ep\` → $RES" >> $GITHUB_STEP_SUMMARY
+          done
+
+      - name: PAT ile 3 API + enablement oku (BAŞARILI olmalı)
+        env:
+          GH_TOKEN: ${{ secrets.APPSEC_GHAS_TOKEN }}
+        run: |
+          set -e
+          echo "## PAT ile GHAS okuma" >> $GITHUB_STEP_SUMMARY
+
+          echo "### Enablement (security_and_analysis)" >> $GITHUB_STEP_SUMMARY
+          echo '```json' >> $GITHUB_STEP_SUMMARY
+          gh api "repos/$R" --jq '.security_and_analysis' | tee /tmp/sa.json >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+          # ---- Dependabot ----
+          gh api --paginate "repos/$R/dependabot/alerts?state=open&per_page=100" > /tmp/dep.json
+          DEP_C=$(jq '[.[]|select(.security_advisory.severity=="critical")]|length' /tmp/dep.json)
+          DEP_H=$(jq '[.[]|select(.security_advisory.severity=="high")]|length' /tmp/dep.json)
+
+          # ---- Secret scanning ----
+          gh api --paginate "repos/$R/secret-scanning/alerts?state=open&per_page=100" > /tmp/sec.json
+          SEC=$(jq 'length' /tmp/sec.json)
+
+          # ---- Code scanning (CodeQL) ----
+          gh api --paginate "repos/$R/code-scanning/alerts?state=open&per_page=100" > /tmp/cs.json
+          CS_C=$(jq '[.[]|select(.rule.security_severity_level=="critical")]|length' /tmp/cs.json)
+          CS_H=$(jq '[.[]|select(.rule.security_severity_level=="high")]|length' /tmp/cs.json)
+
+          {
+            echo "### Sonuç sayımı"
+            echo "| Kaynak | Critical | High | Not |"
+            echo "|---|---|---|---|"
+            echo "| Dependabot       | $DEP_C | $DEP_H | severity: security_advisory.severity |"
+            echo "| Code scanning    | $CS_C | $CS_H | severity: rule.security_severity_level |"
+            echo "| Secret scanning  | — | — | toplam $SEC (her secret = RED) |"
+          } >> $GITHUB_STEP_SUMMARY
+
+          echo "DEP crit=$DEP_C high=$DEP_H | CS crit=$CS_C high=$CS_H | SECRET=$SEC"
